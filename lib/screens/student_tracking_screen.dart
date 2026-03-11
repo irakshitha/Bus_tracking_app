@@ -12,20 +12,16 @@ class StudentTrackingScreen extends StatefulWidget {
   });
 
   @override
-  State<StudentTrackingScreen> createState() =>
-      _StudentTrackingScreenState();
+  State<StudentTrackingScreen> createState() => _StudentTrackingScreenState();
 }
 
-class _StudentTrackingScreenState
-    extends State<StudentTrackingScreen> {
-
+class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
   int currentStopIndex = 0;
   bool isBusMoving = true;
 
   /// ✅ ETA Calculation (No negative values)
   int calculateETA() {
-    int remainingStops =
-        widget.stops.length - currentStopIndex - 1;
+    int remainingStops = widget.stops.length - currentStopIndex - 1;
 
     if (remainingStops <= 0) {
       return 0;
@@ -37,7 +33,9 @@ class _StudentTrackingScreenState
   @override
   void initState() {
     super.initState();
-    simulateBusMovement();
+    if (widget.stops.isNotEmpty) {
+      simulateBusMovement();
+    }
   }
 
   /// ✅ Simulate live bus movement
@@ -57,7 +55,6 @@ class _StudentTrackingScreenState
             duration: const Duration(seconds: 2),
           ),
         );
-
       } else {
         timer.cancel();
         setState(() {
@@ -84,7 +81,6 @@ class _StudentTrackingScreenState
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-
             /// Route Info Card
             Card(
               shape: RoundedRectangleBorder(
@@ -94,8 +90,7 @@ class _StudentTrackingScreenState
               child: ListTile(
                 title: Text(
                   widget.routeName,
-                  style: const TextStyle(
-                      fontWeight: FontWeight.bold),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 subtitle: Text(
                   "Current Stop: ${widget.stops[currentStopIndex]}",
@@ -126,22 +121,16 @@ class _StudentTrackingScreenState
 
             /// Bus Status Row
             Row(
-              mainAxisAlignment:
-                  MainAxisAlignment.spaceBetween,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text(
                   "Bus Status:",
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold),
+                  style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  isBusMoving
-                      ? "Moving"
-                      : "Reached Destination",
+                  isBusMoving ? "Moving" : "Reached Destination",
                   style: TextStyle(
-                      color: isBusMoving
-                          ? Colors.green
-                          : Colors.red,
+                      color: isBusMoving ? Colors.green : Colors.red,
                       fontWeight: FontWeight.bold),
                 ),
               ],
@@ -152,8 +141,7 @@ class _StudentTrackingScreenState
             /// ETA Display
             Text(
               "ETA: ${calculateETA()} minutes",
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold),
+              style: const TextStyle(fontWeight: FontWeight.bold),
             ),
 
             const SizedBox(height: 20),
@@ -163,8 +151,7 @@ class _StudentTrackingScreenState
               alignment: Alignment.centerLeft,
               child: Text(
                 "Stops Progress",
-                style: TextStyle(
-                    fontWeight: FontWeight.bold),
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
 

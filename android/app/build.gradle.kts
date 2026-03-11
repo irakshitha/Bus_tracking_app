@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("kotlin-android")
     id("dev.flutter.flutter-gradle-plugin")
@@ -7,8 +7,8 @@ plugins {
 
 android {
     namespace = "com.example.bus_tracking_app"
-    compileSdk = 36
-    ndkVersion = "28.2.13676358" 
+    compileSdk = 35
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -21,8 +21,8 @@ android {
 
     defaultConfig {
         applicationId = "com.example.bus_tracking_app"
-        minSdk = flutter.minSdkVersion
-        targetSdk = 36
+        minSdk = 23
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
     }
@@ -35,20 +35,18 @@ android {
 }
 
 dependencies {
-
     implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
     implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-firestore-ktx")
-
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.core:core:1.12.0")
-
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.core:core:1.13.1")
 }
 
 configurations.all {
-    resolutionStrategy {
-        force("androidx.core:core-ktx:1.12.0")
-        force("androidx.core:core:1.12.0")
+    resolutionStrategy.eachDependency {
+        if (requested.group == "androidx.core") {
+            useVersion("1.13.1")
+        }
     }
 }
 

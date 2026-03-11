@@ -42,9 +42,7 @@ class _LoginScreenState extends State<LoginScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 const Icon(Icons.directions_bus, size: 85, color: Colors.white),
-
                 const SizedBox(height: 15),
-
                 const Text(
                   "Smart Bus Tracking",
                   style: TextStyle(
@@ -53,15 +51,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     color: Colors.white,
                   ),
                 ),
-
                 const SizedBox(height: 35),
-
                 _inputField(email, "Email", Icons.email),
                 const SizedBox(height: 20),
                 _inputField(password, "Password", Icons.lock, isPassword: true),
-
                 const SizedBox(height: 30),
-
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
@@ -72,9 +66,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 10),
-
                 Row(
                   children: [
                     Expanded(child: _roleCard("Student", Icons.school)),
@@ -82,9 +74,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     Expanded(child: _roleCard("Driver", Icons.person)),
                   ],
                 ),
-
                 const SizedBox(height: 35),
-
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     minimumSize: const Size(double.infinity, 50),
@@ -102,7 +92,6 @@ class _LoginScreenState extends State<LoginScreen> {
                           user.uid,
                         );
 
-                        // Check if selected role matches Firestore role
                         if (role != selectedRole) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
@@ -132,7 +121,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       );
                     }
                   },
-
                   child: const Text(
                     "Login",
                     style: TextStyle(
@@ -158,6 +146,8 @@ class _LoginScreenState extends State<LoginScreen> {
     return TextField(
       controller: controller,
       obscureText: isPassword,
+      scribbleEnabled: false, // ← FIX: disables stylus handwriting
+      enableIMEPersonalizedLearning: false, // ← FIX: disables IME feature
       decoration: InputDecoration(
         filled: true,
         fillColor: Colors.white,
