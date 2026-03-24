@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class StudentTrackingScreen extends StatefulWidget {
   final String routeName;
@@ -18,6 +19,19 @@ class StudentTrackingScreen extends StatefulWidget {
 class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
   int currentStopIndex = 0;
   bool isBusMoving = true;
+
+  GoogleMapController? _mapController;
+
+  // Dummy coordinates for simulation
+  final List<LatLng> _stopCoordinates = const [
+    LatLng(12.9716, 77.5946), // Bus Stand
+    LatLng(12.9750, 77.6000), // Stop 1
+    LatLng(12.9800, 77.6100), // Stop 2
+    LatLng(12.9850, 77.6200), // Stop 3
+    LatLng(12.9900, 77.6300), // College
+  ];
+
+  LatLng _currentBusPosition = const LatLng(12.9716, 77.5946);
 
   /// ✅ ETA Calculation (No negative values)
   int calculateETA() {
@@ -44,6 +58,12 @@ class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
       if (currentStopIndex < widget.stops.length - 1) {
         setState(() {
           currentStopIndex++;
+          if (currentStopIndex < _stopCoordinates.length) {
+            _currentBusPosition = _stopCoordinates[currentStopIndex];
+            _mapController?.animateCamera(
+              CameraUpdate.newLatLng(_currentBusPosition),
+            );
+          }
         });
 
         // Show notification when reaching stop
@@ -100,19 +120,37 @@ class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
 
             const SizedBox(height: 20),
 
-            /// Map Placeholder
-            Container(
-              height: 200,
+            /// Actual Google Map
+            SizedBox(
+              height: 300,
               width: double.infinity,
-              decoration: BoxDecoration(
+              child: ClipRRect(
                 borderRadius: BorderRadius.circular(15),
-                color: Colors.grey.shade300,
-              ),
-              child: const Center(
-                child: Icon(
-                  Icons.map,
-                  size: 80,
-                  color: Colors.blue,
+                child: GoogleMap(
+                  initialCameraPosition: CameraPosition(
+                    target: _currentBusPosition,
+                    zoom: 14,
+                  ),
+                  onMapCreated: (controller) {
+                    _mapController = controller;
+                  },
+                  markers: {
+                    Marker(
+                      markerId: const MarkerId('bus'),
+                      position: _currentBusPosition,
+                      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+                      infoWindow: const InfoWindow(title: 'Bus Current Location'),
+                      zIndex: 2,
+                    ),
+                    for (int i = 0; i < widget.stops.length && i < _stopCoordinates.length; i++)
+                      Marker(
+                        markerId: MarkerId('stop_$i'),
+                        position: _stopCoordinates[i],
+                        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+                        infoWindow: InfoWindow(title: widget.stops[i]),
+                        zIndex: 1,
+                      ),
+                  },
                 ),
               ),
             ),

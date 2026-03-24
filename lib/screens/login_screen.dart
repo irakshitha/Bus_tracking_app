@@ -16,6 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final FirestoreService _firestoreService = FirestoreService();
 
   String selectedRole = "Student";
+  bool isLogin = true;
 
   @override
   void dispose() {
@@ -82,10 +83,16 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   onPressed: () async {
                     try {
-                      final user = await _authService.login(
-                        email.text.trim(),
-                        password.text.trim(),
-                      );
+                      final user = isLogin 
+                          ? await _authService.login(
+                              email.text.trim(),
+                              password.text.trim(),
+                            )
+                          : await _authService.register(
+                              email.text.trim(),
+                              password.text.trim(),
+                              selectedRole,
+                            );
 
                       if (user != null) {
                         String? role = await _firestoreService.getUserRole(
@@ -117,14 +124,31 @@ class _LoginScreenState extends State<LoginScreen> {
                       }
                     } catch (e) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text("Login Failed: $e")),
+                        SnackBar(content: Text("${isLogin ? 'Login' : 'Registration'} Failed: $e")),
                       );
                     }
                   },
-                  child: const Text(
-                    "Login",
-                    style: TextStyle(
+                  child: Text(
+                    isLogin ? "Login" : "Register",
+                    style: const TextStyle(
                       color: Color(0xFF0D47A1),
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      isLogin = !isLogin;
+                    });
+                  },
+                  child: Text(
+                    isLogin
+                        ? "Don't have an account? Register"
+                        : "Already have an account? Login",
+                    style: const TextStyle(
+                      color: Colors.white,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
