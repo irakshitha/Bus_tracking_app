@@ -27,17 +27,30 @@ class StudentTrackingScreen extends StatefulWidget {
 class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
   final FirestoreService _firestoreService = FirestoreService();
 
+  final LocationService _locationService = LocationService();
+
   GoogleMapController? _mapController;
 
   BusLocation? _busLocation;
   int _lastNotifiedStopIndex = -1; // avoids repeated notifications
   bool _boardingConfirmed = false;
   String _studentName = 'Student';
+  bool _hasLocationPermission = false;
 
   @override
   void initState() {
     super.initState();
     _loadStudentName();
+    _requestLocationPermission();
+  }
+
+  Future<void> _requestLocationPermission() async {
+    final granted = await _locationService.requestPermission();
+    if (mounted) {
+      setState(() {
+        _hasLocationPermission = granted;
+      });
+    }
   }
 
   Future<void> _loadStudentName() async {
@@ -189,6 +202,8 @@ class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
                         target: busLatLng,
                         zoom: 14,
                       ),
+                      myLocationEnabled: _hasLocationPermission,
+                      myLocationButtonEnabled: _hasLocationPermission,
                       onMapCreated: (c) {
                         _mapController = c;
                         // If we already have a location, move camera
@@ -339,7 +354,7 @@ class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
         markerId: const MarkerId('bus'),
         position: busLatLng,
         icon:
-            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
         infoWindow: const InfoWindow(title: '🚌 Bus'),
         zIndexInt: 2,
       ));
