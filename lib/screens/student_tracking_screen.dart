@@ -1,331 +1,392 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import '../constants/routes_data.dart';
+import '../models/route_model.dart';
 import '../models/bus_model.dart';
 import '../services/firestore_service.dart';
-import '../services/location_service.dart';
 import '../services/notification_service.dart';
-
-/// Student's live bus tracking screen.
-/// Listens to Firestore in real time for the driver's GPS position
-/// and updates the map, ETA, and stop progress accordingly.
 class StudentTrackingScreen extends StatefulWidget {
-  final RouteInfo routeInfo;
-  final String uid;
+  final RouteModel routeModel;
 
   const StudentTrackingScreen({
     super.key,
-    required this.routeInfo,
-    required this.uid,
+    required this.routeModel,
   });
 
   @override
   State<StudentTrackingScreen> createState() => _StudentTrackingScreenState();
 }
 
-class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
+class _StudentTrackingScreenState extends State<StudentTrackingScreen>
+    with TickerProviderStateMixin {
   final FirestoreService _firestoreService = FirestoreService();
-
-  final LocationService _locationService = LocationService();
-
   GoogleMapController? _mapController;
 
-  BusLocation? _busLocation;
-  int _lastNotifiedStopIndex = -1; // avoids repeated notifications
-  bool _boardingConfirmed = false;
-  String _studentName = 'Student';
-  bool _hasLocationPermission = false;
+  // Animation for smooth bus marker movement
+  AnimationController? _animController;
+  Animation<double>? _latAnim;
+  Animation<double>? _lngAnim;
 
+  LatLng _busPosition = const LatLng(13.0694, 80.1948); // default Koyambedu
+  LatLng _prevBusPosition = const LatLng(13.0694, 80.1948);
+
+  BusLocation? _busLocation;
+  StreamSubscription<BusLocation?>? _busStream;
+
+  bool _isDriverOnline = false;
+  DateTime? _lastUpdated;
+  bool _hasNotifiedTwoStops = false;
   @override
   void initState() {
     super.initState();
-    _loadStudentName();
-    _requestLocationPermission();
+    _initAnimation();
+
+    // Use the driver assigned to this route (if any)
+    final driverId = widget.routeModel.assignedDriverId;
+    if (driverId.isNotEmpty) {
+      _subscribeToDriver(driverId);
+    } else {
+      // Fallback: listen to any bus on this route
+      _subscribeToRouteAnyDriver();
+    }
   }
 
-  Future<void> _requestLocationPermission() async {
-    final granted = await _locationService.requestPermission();
-    if (mounted) {
+  void _initAnimation() {
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+  }
+
+  void _subscribeToDriver(String driverId) {
+    _busStream =
+        _firestoreService.getBusLocationStream(driverId).listen((bus) {
+      _handleBusUpdate(bus);
+    });
+  }
+
+  /// If no driver is assigned, watch the entire bus_location collection for
+  /// any bus on this route that is online.
+  void _subscribeToRouteAnyDriver() {
+    FirebaseFirestore.instance
+        .collection('bus_location')
+        .where('routeId', isEqualTo: widget.routeModel.routeId)
+        .where('isOnline', isEqualTo: true)
+        .snapshots()
+        .listen((snap) {
+      if (snap.docs.isNotEmpty) {
+        final bus = BusLocation.fromFirestore(snap.docs.first);
+        _handleBusUpdate(bus);
+      } else {
+        if (mounted) setState(() => _isDriverOnline = false);
+      }
+    });
+  }
+
+  void _handleBusUpdate(BusLocation? bus) {
+    if (bus == null || !mounted) return;
+    final newPos = LatLng(bus.latitude, bus.longitude);
+
+    // Animate from old position to new
+    _animController?.reset();
+    _latAnim = Tween<double>(
+      begin: _prevBusPosition.latitude,
+      end: newPos.latitude,
+    ).animate(CurvedAnimation(
+        parent: _animController!, curve: Curves.easeInOut));
+    _lngAnim = Tween<double>(
+      begin: _prevBusPosition.longitude,
+      end: newPos.longitude,
+    ).animate(CurvedAnimation(
+        parent: _animController!, curve: Curves.easeInOut));
+
+    _animController?.addListener(() {
+      if (!mounted) return;
       setState(() {
-        _hasLocationPermission = granted;
+        _busPosition = LatLng(
+          _latAnim?.value ?? newPos.latitude,
+          _lngAnim?.value ?? newPos.longitude,
+        );
       });
-    }
-  }
+    });
 
-  Future<void> _loadStudentName() async {
-    final profile = await _firestoreService.getUserProfile(widget.uid);
-    if (profile != null && mounted) {
-      setState(() =>
-          _studentName = profile.name.isNotEmpty ? profile.name : 'Student');
-    }
-  }
+    _animController?.forward();
 
-  /// Calculate ETA in minutes based on remaining stops.
-  int _calculateETA(int currentStopIndex) {
-    final remaining =
-        widget.routeInfo.stops.length - currentStopIndex - 1;
-    return remaining <= 0 ? 0 : remaining * 4; // ~4 min per stop
-  }
-
-  /// Check if bus is near any stop and fire a notification if so.
-  void _checkAndNotify(BusLocation loc) {
-    final pos = LatLng(loc.lat, loc.lng);
-    final nearIdx = LocationService.nearestStopIndex(
-      pos,
-      widget.routeInfo.coordinates,
-      thresholdMeters: 150,
+    // Pan camera to follow bus
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLng(newPos),
     );
 
-    if (nearIdx >= 0 && nearIdx != _lastNotifiedStopIndex) {
-      _lastNotifiedStopIndex = nearIdx;
-      final stopName = widget.routeInfo.stops[nearIdx];
-      final eta = _calculateETA(nearIdx);
+    setState(() {
+      _prevBusPosition = newPos;
+      _busLocation = bus;
+      _isDriverOnline = bus.isOnline;
+      _lastUpdated = bus.timestamp;
+    });
 
-      if (eta > 0) {
-        NotificationService.busApproachingStop(stopName, eta);
-      } else {
-        NotificationService.busArrivedAtStop(stopName);
+    _checkProximityAndNotify(newPos);
+  }
+
+  void _checkProximityAndNotify(LatLng busPos) {
+    if (widget.routeModel.stopCoordinates.isEmpty) return;
+
+    int closestIndex = 0;
+    double minDist = double.infinity;
+    for (int i = 0; i < widget.routeModel.stopCoordinates.length; i++) {
+      final d = _haversineKm(busPos, widget.routeModel.stopCoordinates[i]);
+      if (d < minDist) {
+        minDist = d;
+        closestIndex = i;
       }
     }
-  }
 
-  /// Student taps "Board at this stop"
-  Future<void> _confirmBoarding(String stopName) async {
-    await _firestoreService.confirmBoarding(
-      routeId: widget.routeInfo.routeId,
-      stopName: stopName,
-      uid: widget.uid,
-      studentName: _studentName,
-    );
-    if (mounted) {
-      setState(() => _boardingConfirmed = true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✅ Boarding confirmed at $stopName'),
-          backgroundColor: Colors.green,
-        ),
+    final remainingStops = widget.routeModel.stops.length - closestIndex - 1;
+    
+    // Notify when 2 stops away
+    if (remainingStops <= 2 && remainingStops >= 0 && !_hasNotifiedTwoStops) {
+      _hasNotifiedTwoStops = true;
+      NotificationService.showLocalNotification(
+        title: 'Bus Approaching! 🚌',
+        body: '${widget.routeModel.routeName} is $remainingStops stops away from the final destination.',
       );
     }
+    
+    // Reset if driver loops around (optional, we'll keep it simple for now)
   }
 
   @override
   void dispose() {
-    _mapController?.dispose();
+    _busStream?.cancel();
+    _animController?.dispose();
     super.dispose();
+  }
+
+  int _calculateETA() {
+    if (!_isDriverOnline || widget.routeModel.stopCoordinates.isEmpty) return 0;
+    // Find which stop the bus is closest to
+    int closestIndex = 0;
+    double minDist = double.infinity;
+    for (int i = 0; i < widget.routeModel.stopCoordinates.length; i++) {
+      final d = _haversineKm(
+          _busPosition, widget.routeModel.stopCoordinates[i]);
+      if (d < minDist) {
+        minDist = d;
+        closestIndex = i;
+      }
+    }
+    final remaining = widget.routeModel.stops.length - closestIndex - 1;
+    return remaining <= 0 ? 0 : remaining * 4; // ~4 min per stop
+  }
+
+  double _haversineKm(LatLng a, LatLng b) {
+    const r = 6371.0;
+    final dLat = _deg2rad(b.latitude - a.latitude);
+    final dLon = _deg2rad(b.longitude - a.longitude);
+    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(_deg2rad(a.latitude)) *
+            math.cos(_deg2rad(b.latitude)) *
+            math.sin(dLon / 2) *
+            math.sin(dLon / 2);
+    return r * 2 * math.atan2(math.sqrt(h), math.sqrt(1 - h));
+  }
+
+  double _deg2rad(double d) => d * math.pi / 180;
+
+  String _formatTimestamp(DateTime? dt) {
+    if (dt == null) return '—';
+    final diff = DateTime.now().difference(dt);
+    if (diff.inSeconds < 10) return 'Just now';
+    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
+    return '${diff.inMinutes}m ago';
+  }
+
+  Set<Polyline> _buildPolylines() {
+    if (widget.routeModel.stopCoordinates.length < 2) return {};
+    return {
+      Polyline(
+        polylineId: const PolylineId('route'),
+        points: widget.routeModel.stopCoordinates,
+        color: const Color(0xFF0D47A1),
+        width: 4,
+        patterns: [],
+      ),
+    };
+  }
+
+  Set<Marker> _buildMarkers() {
+    final markers = <Marker>{};
+
+    // Bus marker
+    if (_isDriverOnline) {
+      markers.add(Marker(
+        markerId: const MarkerId('bus'),
+        position: _busPosition,
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        infoWindow: InfoWindow(
+          title: '🚌 Bus – ${widget.routeModel.routeName}',
+          snippet:
+              '${_busLocation?.speed.toStringAsFixed(1) ?? '0'} km/h',
+        ),
+        zIndex: 3,
+      ));
+    }
+
+    // Stop markers
+    for (int i = 0;
+        i < widget.routeModel.stops.length &&
+            i < widget.routeModel.stopCoordinates.length;
+        i++) {
+      markers.add(Marker(
+        markerId: MarkerId('stop_$i'),
+        position: widget.routeModel.stopCoordinates[i],
+        icon: BitmapDescriptor.defaultMarkerWithHue(
+            i == widget.routeModel.stops.length - 1
+                ? BitmapDescriptor.hueGreen
+                : BitmapDescriptor.hueRed),
+        infoWindow: InfoWindow(title: widget.routeModel.stops[i]),
+        zIndex: 1,
+      ));
+    }
+
+    return markers;
   }
 
   @override
   Widget build(BuildContext context) {
+    final initialTarget = widget.routeModel.stopCoordinates.isNotEmpty
+        ? widget.routeModel.stopCoordinates.first
+        : const LatLng(13.0694, 80.1948);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Live Tracking'),
+        title: const Text('Live Tracking',
+            style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
+        backgroundColor: const Color(0xFF0D47A1),
+        foregroundColor: Colors.white,
+        elevation: 0,
       ),
-      body: StreamBuilder<BusLocation?>(
-        stream: _firestoreService
-            .busLocationStream(widget.routeInfo.routeId),
-        builder: (context, snapshot) {
-          // Show loading only on first load
-          if (snapshot.connectionState == ConnectionState.waiting &&
-              _busLocation == null) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          if (snapshot.hasData && snapshot.data != null) {
-            _busLocation = snapshot.data;
-            // Trigger notification if bus is near a stop
-            _checkAndNotify(_busLocation!);
-          }
-
-          final busLoc = _busLocation;
-          final isActive = busLoc?.isActive ?? false;
-          final currentStopName = busLoc?.currentStop ?? '';
-          final currentStopIndex = busLoc?.currentStopIndex ?? 0;
-          final eta = _calculateETA(currentStopIndex);
-
-          final busLatLng = busLoc != null
-              ? LatLng(busLoc.lat, busLoc.lng)
-              : widget.routeInfo.coordinates.first;
-
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
+      body: Column(
+        children: [
+          // ── Status Banner ──────────────────────────────────────────────────
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            color: _isDriverOnline
+                ? const Color(0xFF1B5E20)
+                : Colors.orange.shade800,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
               children: [
-                // ── Status Banner ──
-                _buildStatusBanner(isActive, busLoc?.driverName ?? ''),
-
-                const SizedBox(height: 12),
-
-                // ── Route info card ──
-                Card(
-                  child: ListTile(
-                    leading: const Icon(Icons.route, color: Color(0xFF1565C0)),
-                    title: Text(
-                      widget.routeInfo.routeName,
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    subtitle: Text(
-                      isActive
-                          ? 'Now at: $currentStopName'
-                          : 'Bus not started yet',
-                    ),
-                    trailing: isActive
-                        ? Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text(
-                                '$eta',
-                                style: const TextStyle(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.bold,
-                                  color: Color(0xFF1565C0),
-                                ),
-                              ),
-                              const Text('min',
-                                  style: TextStyle(fontSize: 11)),
-                            ],
-                          )
-                        : null,
-                  ),
+                Icon(
+                  _isDriverOnline ? Icons.circle : Icons.circle_outlined,
+                  size: 10,
+                  color: Colors.white,
                 ),
-
-                const SizedBox(height: 12),
-
-                // ── Google Map ──
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: SizedBox(
-                    height: 280,
-                    child: GoogleMap(
-                      initialCameraPosition: CameraPosition(
-                        target: busLatLng,
-                        zoom: 14,
-                      ),
-                      myLocationEnabled: _hasLocationPermission,
-                      myLocationButtonEnabled: _hasLocationPermission,
-                      onMapCreated: (c) {
-                        _mapController = c;
-                        // If we already have a location, move camera
-                        if (busLoc != null) {
-                          c.animateCamera(
-                              CameraUpdate.newLatLng(busLatLng));
-                        }
-                      },
-                      markers: _buildMarkers(busLatLng),
-                      polylines: _buildPolyline(),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                // ── Boarding confirmation button ──
-                if (isActive && !_boardingConfirmed)
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.emoji_people),
-                      label: Text(
-                          'Board at $currentStopName'),
-                      style: OutlinedButton.styleFrom(
-                        padding:
-                            const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
-                      ),
-                      onPressed: currentStopName.isNotEmpty
-                          ? () => _confirmBoarding(currentStopName)
-                          : null,
-                    ),
-                  ),
-                if (_boardingConfirmed)
-                  const Chip(
-                    avatar: Icon(Icons.check_circle, color: Colors.green),
-                    label: Text('Boarding confirmed'),
-                  ),
-
-                const SizedBox(height: 16),
-
-                // ── Stops Progress ──
-                const Align(
-                  alignment: Alignment.centerLeft,
+                const SizedBox(width: 8),
+                Expanded(
                   child: Text(
-                    'Stops Progress',
-                    style: TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 15),
+                    _isDriverOnline
+                        ? 'Driver Online – ${widget.routeModel.routeName}'
+                        : 'Waiting for driver to start trip…',
+                    style: const TextStyle(
+                        color: Colors.white, fontWeight: FontWeight.w500),
                   ),
                 ),
-                const SizedBox(height: 8),
-                ...List.generate(widget.routeInfo.stops.length, (i) {
-                  final passed = i <= currentStopIndex && isActive;
-                  final isCurrent =
-                      i == currentStopIndex && isActive;
-                  return ListTile(
-                    dense: true,
-                    leading: Icon(
-                      passed
-                          ? Icons.check_circle
-                          : Icons.radio_button_unchecked,
-                      color: isCurrent
-                          ? const Color(0xFF1565C0)
-                          : passed
-                              ? Colors.green
-                              : Colors.grey,
-                    ),
-                    title: Text(
-                      widget.routeInfo.stops[i],
-                      style: TextStyle(
-                        fontWeight: isCurrent
-                            ? FontWeight.bold
-                            : FontWeight.normal,
-                        color: isCurrent
-                            ? const Color(0xFF1565C0)
-                            : null,
-                      ),
-                    ),
-                    trailing: isCurrent
-                        ? const Chip(
-                            label: Text('Bus here'),
-                            backgroundColor: Color(0xFFE3F2FD),
-                          )
-                        : null,
-                  );
-                }),
+                Text(
+                  _formatTimestamp(_lastUpdated),
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 11),
+                ),
               ],
             ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildStatusBanner(bool isActive, String driverName) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: isActive ? Colors.green[50] : Colors.orange[50],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-            color: isActive ? Colors.green : Colors.orange),
-      ),
-      child: Row(
-        children: [
-          Icon(
-            isActive ? Icons.circle : Icons.circle_outlined,
-            color: isActive ? Colors.green : Colors.orange,
-            size: 14,
           ),
-          const SizedBox(width: 8),
+
+          // ── Map ────────────────────────────────────────────────────────────
           Expanded(
-            child: Text(
-              isActive
-                  ? 'Bus is live${driverName.isNotEmpty ? ' — Driver: $driverName' : ''}'
-                  : 'Waiting for driver to start the trip…',
-              style: TextStyle(
-                color: isActive ? Colors.green[800] : Colors.orange[800],
-                fontWeight: FontWeight.w600,
+            flex: 5,
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: initialTarget,
+                zoom: 13,
+              ),
+              onMapCreated: (c) => _mapController = c,
+              markers: _buildMarkers(),
+              polylines: _buildPolylines(),
+              myLocationButtonEnabled: false,
+              zoomControlsEnabled: true,
+            ),
+          ),
+
+          // ── Info Cards ─────────────────────────────────────────────────────
+          Expanded(
+            flex: 3,
+            child: Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      _InfoChip(
+                        icon: Icons.timer_outlined,
+                        label: 'ETA',
+                        value: '${_calculateETA()} min',
+                        color: const Color(0xFF0D47A1),
+                      ),
+                      const SizedBox(width: 10),
+                      _InfoChip(
+                        icon: Icons.speed,
+                        label: 'Speed',
+                        value:
+                            '${_busLocation?.speed.toStringAsFixed(0) ?? '—'} km/h',
+                        color: Colors.green.shade700,
+                      ),
+                      const SizedBox(width: 10),
+                      _InfoChip(
+                        icon: Icons.place_outlined,
+                        label: 'Stops',
+                        value: '${widget.routeModel.stops.length}',
+                        color: Colors.orange.shade700,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Stops',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey[700],
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Expanded(
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: widget.routeModel.stops.length,
+                      itemBuilder: (ctx, i) => _StopChip(
+                        label: widget.routeModel.stops[i],
+                        isLast: i == widget.routeModel.stops.length - 1,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      const Icon(Icons.calendar_today,
+                          size: 14, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      Text(
+                        '🌅 ${widget.routeModel.morningSchedule}  '
+                        '🌙 ${widget.routeModel.eveningSchedule}',
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
@@ -333,45 +394,85 @@ class _StudentTrackingScreenState extends State<StudentTrackingScreen> {
       ),
     );
   }
+}
 
-  Set<Marker> _buildMarkers(LatLng busLatLng) {
-    final markers = <Marker>{};
+class _InfoChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
 
-    // Stop markers
-    for (int i = 0; i < widget.routeInfo.stops.length; i++) {
-      markers.add(Marker(
-        markerId: MarkerId('stop_$i'),
-        position: widget.routeInfo.coordinates[i],
-        icon:
-            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
-        infoWindow: InfoWindow(title: widget.routeInfo.stops[i]),
-      ));
-    }
+  const _InfoChip(
+      {required this.icon,
+      required this.label,
+      required this.value,
+      required this.color});
 
-    // Bus marker — only show if trip is active
-    if (_busLocation?.isActive == true) {
-      markers.add(Marker(
-        markerId: const MarkerId('bus'),
-        position: busLatLng,
-        icon:
-            BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueOrange),
-        infoWindow: const InfoWindow(title: '🚌 Bus'),
-        zIndexInt: 2,
-      ));
-    }
-
-    return markers;
-  }
-
-  Set<Polyline> _buildPolyline() {
-    return {
-      Polyline(
-        polylineId: const PolylineId('route'),
-        points: widget.routeInfo.coordinates,
-        color: const Color(0xFF1565C0).withValues(alpha: 0.5),
-        width: 4,
-        patterns: [PatternItem.dot, PatternItem.gap(10)],
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 4),
+              Text(label,
+                  style: TextStyle(
+                      fontSize: 10, color: color, fontWeight: FontWeight.w500)),
+            ]),
+            const SizedBox(height: 4),
+            Text(value,
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+          ],
+        ),
       ),
-    };
+    );
+  }
+}
+
+class _StopChip extends StatelessWidget {
+  final String label;
+  final bool isLast;
+
+  const _StopChip({required this.label, required this.isLast});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: isLast
+                ? Colors.green.withValues(alpha: 0.15)
+                : const Color(0xFF0D47A1).withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+                color: isLast
+                    ? Colors.green.shade300
+                    : const Color(0xFF0D47A1).withValues(alpha: 0.3)),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+                fontSize: 11,
+                color: isLast ? Colors.green.shade700 : const Color(0xFF0D47A1),
+                fontWeight: FontWeight.w500),
+          ),
+        ),
+        if (!isLast)
+          const Icon(Icons.chevron_right, size: 14, color: Colors.grey),
+      ],
+    );
   }
 }

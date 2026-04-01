@@ -1,224 +1,121 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../models/route_model.dart';
 import '../models/bus_model.dart';
+import 'seed_service.dart';
 
-/// Central service for all Firestore database operations.
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // ────────────────────────────────────────────────
-  // USER PROFILE
-  // ────────────────────────────────────────────────
+  // ─── User ──────────────────────────────────────────────────────────────────
 
-  /// Create or update a user document in Firestore.
-  Future<void> saveUserProfile({
-    required String uid,
-    required String name,
-    required String phone,
-    required String email,
-    required String role,
-    String? routeId,
-  }) async {
+  Future<void> saveUserRole(String uid, String role,
+      {String name = '', String phone = '', String email = ''}) async {
     await _db.collection('users').doc(uid).set({
+      'role': role,
       'name': name,
       'phone': phone,
       'email': email,
-      'role': role,
-      if (routeId != null) 'routeId': routeId,
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
-  /// Save just the user role during registration (backwards-compatible helper).
-  Future<void> saveUserRole(String uid, String role) async {
-    await _db
-        .collection('users')
-        .doc(uid)
-        .set({'role': role}, SetOptions(merge: true));
-  }
-
-  /// Fetch the role string for a uid.
   Future<String?> getUserRole(String uid) async {
     final doc = await _db.collection('users').doc(uid).get();
-    return doc.exists ? doc['role'] as String? : null;
+    if (doc.exists) return doc['role'] as String?;
+    return null;
   }
 
-  /// Fetch full user profile.
-  Future<UserProfile?> getUserProfile(String uid) async {
-    final doc = await _db.collection('users').doc(uid).get();
-    if (!doc.exists) return null;
-    return UserProfile.fromMap(uid, doc.data() as Map<String, dynamic>);
+  Future<void> saveUserRouteId(String uid, String routeId) async {
+    await _db.collection('users').doc(uid).update({'routeId': routeId});
   }
 
-  /// Update only name and phone in the user document.
-  Future<void> updateUserProfile(
-      String uid, String name, String phone) async {
-    await _db.collection('users').doc(uid).update({
-      'name': name,
-      'phone': phone,
-    });
+  // ─── Routes ────────────────────────────────────────────────────────────────
+
+  /// Returns all routes as a one-time future (used for route selection screen)
+  Future<List<RouteModel>> getRoutes() async {
+    final snapshot = await _db.collection('routes').get();
+    return snapshot.docs.map((doc) => RouteModel.fromFirestore(doc)).toList()
+      ..sort((a, b) => a.routeName.compareTo(b.routeName));
   }
 
-  // ────────────────────────────────────────────────
-  // LIVE BUS LOCATION  (driver writes → student reads)
-  // ────────────────────────────────────────────────
+  /// Seed 10 default Chennai routes if the collection is empty
+  Future<void> seedDefaultRoutesIfEmpty() async {
+    final snapshot = await _db.collection('routes').limit(1).get();
+    if (snapshot.docs.isNotEmpty) return; // already seeded
 
-  /// Write the driver's current GPS location to Firestore.
-  /// Document key is the routeId (e.g. 'route_1').
-  Future<void> updateBusLocation(
-      String routeId, BusLocation location) async {
-    await _db
-        .collection('bus_locations')
-        .doc(routeId)
-        .set(location.toMap(), SetOptions(merge: true));
+    final batch = _db.batch();
+    for (final route in SeedService.defaultRoutes) {
+      final ref = _db.collection('routes').doc(route.routeId);
+      batch.set(ref, route.toMap());
+    }
+    await batch.commit();
   }
 
-  /// Mark a route's bus as offline (trip ended).
-  Future<void> clearBusLocation(String routeId) async {
-    await _db.collection('bus_locations').doc(routeId).set({
-      'isActive': false,
-      'timestamp': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
+  // ─── Bus Location ──────────────────────────────────────────────────────────
 
-  /// Real-time stream of bus location for a route.
-  /// Used by StudentTrackingScreen to listen for updates.
-  Stream<BusLocation?> busLocationStream(String routeId) {
-    return _db
-        .collection('bus_locations')
-        .doc(routeId)
-        .snapshots()
-        .map((snap) {
-      if (!snap.exists || snap.data() == null) return null;
-      return BusLocation.fromMap(snap.data()!);
-    });
-  }
-
-  // ────────────────────────────────────────────────
-  // TRIP HISTORY
-  // ────────────────────────────────────────────────
-
-  /// Create a new trip record when a driver starts a trip.
-  /// Returns the new trip's document ID.
-  Future<String> startTrip({
-    required String routeId,
+  /// Driver writes their live GPS position
+  Future<void> updateBusLocation({
+    required String driverId,
+    required double latitude,
+    required double longitude,
     required String routeName,
-    required String driverUid,
-    required String driverName,
+    required String routeId,
+    required double speed,
+    required bool isOnline,
   }) async {
-    final ref = await _db.collection('trips').add({
-      'routeId': routeId,
+    await _db.collection('bus_location').doc(driverId).set({
+      'latitude': latitude,
+      'longitude': longitude,
+      'isOnline': isOnline,
       'routeName': routeName,
-      'driverUid': driverUid,
-      'driverName': driverName,
-      'startTime': FieldValue.serverTimestamp(),
-      'isCompleted': false,
-    });
-    return ref.id;
-  }
-
-  /// Mark a trip as completed.
-  Future<void> endTrip(String tripId) async {
-    await _db.collection('trips').doc(tripId).update({
-      'endTime': FieldValue.serverTimestamp(),
-      'isCompleted': true,
+      'routeId': routeId,
+      'speed': speed,
+      'timestamp': FieldValue.serverTimestamp(),
     });
   }
 
-  /// Stream of trip history for a given route (latest first).
-  Stream<List<TripRecord>> tripHistoryStream(String routeId) {
+  /// Student subscribes to a specific driver's location
+  Stream<BusLocation?> getBusLocationStream(String driverId) {
     return _db
-        .collection('trips')
-        .where('routeId', isEqualTo: routeId)
-        .orderBy('startTime', descending: true)
-        .limit(30)
+        .collection('bus_location')
+        .doc(driverId)
+        .snapshots()
+        .map((snap) => snap.exists ? BusLocation.fromFirestore(snap) : null);
+  }
+
+  /// Returns all currently online buses (for admin / multi-bus view)
+  Stream<List<BusLocation>> getActiveBusesStream() {
+    return _db
+        .collection('bus_location')
+        .where('isOnline', isEqualTo: true)
         .snapshots()
         .map((snap) =>
-            snap.docs.map((d) => TripRecord.fromDoc(d)).toList());
+            snap.docs.map((d) => BusLocation.fromFirestore(d)).toList());
   }
 
-  // ────────────────────────────────────────────────
-  // ANNOUNCEMENTS
-  // ────────────────────────────────────────────────
+  // ─── Notifications ─────────────────────────────────────────────────────────
 
-  /// Post a new announcement for a route (or 'all').
-  Future<void> postAnnouncement({
+  Future<void> sendRouteNotification({
     required String routeId,
     required String message,
-    required String postedBy,
+    required String type, // delay | breakdown | info
   }) async {
-    await _db.collection('announcements').add({
+    await _db.collection('notifications').add({
       'routeId': routeId,
       'message': message,
-      'postedBy': postedBy,
-      'postedAt': FieldValue.serverTimestamp(),
+      'type': type,
+      'timestamp': FieldValue.serverTimestamp(),
     });
   }
 
-  /// Stream of announcements visible to a given route
-  /// (includes both route-specific and 'all' announcements).
-  Stream<List<Announcement>> announcementsStream(String routeId) {
+  Stream<List<Map<String, dynamic>>> getNotificationsForRoute(String routeId) {
     return _db
-        .collection('announcements')
-        .orderBy('postedAt', descending: true)
-        .limit(50)
+        .collection('notifications')
+        .where('routeId', isEqualTo: routeId)
+        .orderBy('timestamp', descending: true)
+        .limit(20)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((d) => Announcement.fromDoc(d))
-            .where((a) => a.routeId == routeId || a.routeId == 'all')
-            .toList());
-  }
-
-  /// Delete an announcement by ID.
-  Future<void> deleteAnnouncement(String announcementId) async {
-    await _db.collection('announcements').doc(announcementId).delete();
-  }
-
-  // ────────────────────────────────────────────────
-  // BOARDING CONFIRMATION
-  // ────────────────────────────────────────────────
-
-  /// Student confirms they are boarding at a specific stop.
-  Future<void> confirmBoarding({
-    required String routeId,
-    required String stopName,
-    required String uid,
-    required String studentName,
-  }) async {
-    await _db
-        .collection('boarding')
-        .doc(routeId)
-        .collection('stops')
-        .doc(stopName)
-        .set({
-      'count': FieldValue.increment(1),
-      'students': FieldValue.arrayUnion([uid]),
-      'studentNames': FieldValue.arrayUnion([studentName]),
-    }, SetOptions(merge: true));
-  }
-
-  /// Stream of boarding count for all stops on a route.
-  /// Used by the driver dashboard.
-  Stream<Map<String, int>> boardingCountStream(String routeId) {
-    return _db
-        .collection('boarding')
-        .doc(routeId)
-        .collection('stops')
-        .snapshots()
-        .map((snap) {
-      final Map<String, int> counts = {};
-      for (final doc in snap.docs) {
-        counts[doc.id] = (doc.data()['count'] as num?)?.toInt() ?? 0;
-      }
-      return counts;
-    });
-  }
-
-  // ────────────────────────────────────────────────
-  // SOS ALERTS
-  // ────────────────────────────────────────────────
-
-  /// Send an SOS alert from any user.
-  Future<void> sendSos(SosAlert alert) async {
-    await _db.collection('sos_alerts').add(alert.toMap());
+        .map((snap) =>
+            snap.docs.map((d) => {'id': d.id, ...d.data()}).toList());
   }
 }

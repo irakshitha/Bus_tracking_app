@@ -11,98 +11,77 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _emailCtrl = TextEditingController();
-  final _passwordCtrl = TextEditingController();
-  final _nameCtrl = TextEditingController();
-  final _phoneCtrl = TextEditingController();
-
+  final TextEditingController _email = TextEditingController();
+  final TextEditingController _password = TextEditingController();
   final AuthService _authService = AuthService();
   final FirestoreService _firestoreService = FirestoreService();
 
-  String selectedRole = 'Student';
-  bool isLogin = true;
+  String _selectedRole = 'Student';
+  bool _isLogin = true;
   bool _isLoading = false;
 
   @override
   void dispose() {
-    _emailCtrl.dispose();
-    _passwordCtrl.dispose();
-    _nameCtrl.dispose();
-    _phoneCtrl.dispose();
+    _email.dispose();
+    _password.dispose();
     super.dispose();
   }
 
-  Future<void> _submit() async {
-    final email = _emailCtrl.text.trim();
-    final password = _passwordCtrl.text.trim();
-    final name = _nameCtrl.text.trim();
-    final phone = _phoneCtrl.text.trim();
-
-    if (email.isEmpty || password.isEmpty) {
-      _snack('Please enter email and password');
-      return;
-    }
-
-    if (!isLogin && (name.isEmpty || phone.isEmpty)) {
-      _snack('Please fill in your name and phone number');
+  Future<void> _handleAuth() async {
+    if (_email.text.trim().isEmpty || _password.text.trim().isEmpty) {
+      _showSnack('Please enter email and password');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      if (isLogin) {
-        // ── LOGIN ──
-        final user = await _authService.login(email, password);
-        if (user == null) return;
+      final user = _isLogin
+          ? await _authService.login(
+              _email.text.trim(),
+              _password.text.trim(),
+            )
+          : await _authService.register(
+              _email.text.trim(),
+              _password.text.trim(),
+              _selectedRole,
+            );
 
+      if (user != null) {
         final role = await _firestoreService.getUserRole(user.uid);
 
-        // Validate that the selected role matches the stored role
-        if (role != selectedRole) {
-          _snack('Selected role does not match your registered role');
-          await _authService.logout();
+        // For registration, role is just set – so redirect directly
+        final effectiveRole = role ?? _selectedRole;
+
+        if (_isLogin && role != null && role != _selectedRole) {
+          _showSnack('Selected role does not match your account');
+          setState(() => _isLoading = false);
           return;
         }
 
-        _goToRouteSelection(role ?? selectedRole, user.uid);
-      } else {
-        // ── REGISTER ──
-        final user =
-            await _authService.register(email, password, selectedRole);
-        if (user == null) return;
-
-        // Save full profile to Firestore
-        await _firestoreService.saveUserProfile(
-          uid: user.uid,
-          name: name,
-          phone: phone,
-          email: email,
-          role: selectedRole,
-        );
-
-        _goToRouteSelection(selectedRole, user.uid);
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (_) => RouteSelectionScreen(
+                role: effectiveRole,
+                uid: user.uid,
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
-      _snack('${isLogin ? 'Login' : 'Registration'} failed: $e');
+      _showSnack('${_isLogin ? 'Login' : 'Registration'} failed: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _goToRouteSelection(String role, String uid) {
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RouteSelectionScreen(role: role, uid: uid),
-      ),
+  void _showSnack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg)),
     );
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -120,42 +99,30 @@ class _LoginScreenState extends State<LoginScreen> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 25, vertical: 40),
             child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.directions_bus,
-                    size: 85, color: Colors.white),
-                const SizedBox(height: 10),
+                const SizedBox(height: 30),
+                const Icon(Icons.directions_bus, size: 85, color: Colors.white),
+                const SizedBox(height: 15),
                 const Text(
                   'Smart Bus Tracking',
                   style: TextStyle(
-                    fontSize: 24,
+                    fontSize: 26,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
+                    letterSpacing: 0.5,
                   ),
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  isLogin ? 'Welcome back!' : 'Create your account',
-                  style: const TextStyle(color: Colors.white70),
+                const Text(
+                  'Chennai City Bus Tracker',
+                  style: TextStyle(fontSize: 14, color: Colors.white70),
                 ),
-                const SizedBox(height: 35),
-
-                // Name + Phone fields shown only during registration
-                if (!isLogin) ...[
-                  _inputField(_nameCtrl, 'Full Name', Icons.person),
-                  const SizedBox(height: 16),
-                  _inputField(_phoneCtrl, 'Phone Number', Icons.phone,
-                      keyboardType: TextInputType.phone),
-                  const SizedBox(height: 16),
-                ],
-
-                _inputField(_emailCtrl, 'Email', Icons.email,
-                    keyboardType: TextInputType.emailAddress),
-                const SizedBox(height: 16),
-                _inputField(_passwordCtrl, 'Password', Icons.lock,
+                const SizedBox(height: 40),
+                _inputField(_email, 'Email', Icons.email),
+                const SizedBox(height: 18),
+                _inputField(_password, 'Password', Icons.lock,
                     isPassword: true),
-                const SizedBox(height: 24),
-
-                // Role selection
+                const SizedBox(height: 25),
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
@@ -172,25 +139,27 @@ class _LoginScreenState extends State<LoginScreen> {
                     Expanded(child: _roleCard('Driver', Icons.person)),
                   ],
                 ),
-
                 const SizedBox(height: 30),
-
-                // Submit button
                 SizedBox(
                   width: double.infinity,
-                  height: 50,
+                  height: 52,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.white,
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                          borderRadius: BorderRadius.circular(14)),
                     ),
-                    onPressed: _isLoading ? null : _submit,
+                    onPressed: _isLoading ? null : _handleAuth,
                     child: _isLoading
-                        ? const CircularProgressIndicator(
-                            color: Color(0xFF0D47A1))
+                        ? const SizedBox(
+                            height: 22,
+                            width: 22,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Color(0xFF0D47A1)),
+                          )
                         : Text(
-                            isLogin ? 'Login' : 'Register',
+                            _isLogin ? 'Login' : 'Register',
                             style: const TextStyle(
                               color: Color(0xFF0D47A1),
                               fontWeight: FontWeight.bold,
@@ -199,12 +168,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                   ),
                 ),
-
-                const SizedBox(height: 20),
+                const SizedBox(height: 18),
                 TextButton(
-                  onPressed: () => setState(() => isLogin = !isLogin),
+                  onPressed: () => setState(() => _isLogin = !_isLogin),
                   child: Text(
-                    isLogin
+                    _isLogin
                         ? "Don't have an account? Register"
                         : 'Already have an account? Login',
                     style: const TextStyle(
@@ -224,50 +192,53 @@ class _LoginScreenState extends State<LoginScreen> {
     String hint,
     IconData icon, {
     bool isPassword = false,
-    TextInputType keyboardType = TextInputType.text,
   }) {
     return TextField(
       controller: controller,
       obscureText: isPassword,
-      keyboardType: keyboardType,
+      scribbleEnabled: false,
+      enableIMEPersonalizedLearning: false,
       decoration: InputDecoration(
         filled: true,
         fillColor: Colors.white,
         prefixIcon: Icon(icon),
         hintText: hint,
-        border:
-            OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
         contentPadding:
-            const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       ),
     );
   }
 
   Widget _roleCard(String role, IconData icon) {
-    final isSelected = selectedRole == role;
+    final bool isSelected = _selectedRole == role;
     return GestureDetector(
-      onTap: () => setState(() => selectedRole = role),
+      onTap: () => setState(() => _selectedRole = role),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(vertical: 15),
         decoration: BoxDecoration(
           color: isSelected ? Colors.white : Colors.white24,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           border: Border.all(color: Colors.white),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, 4))
+                ]
+              : [],
         ),
         child: Column(
           children: [
             Icon(icon,
-                color: isSelected
-                    ? const Color(0xFF0D47A1)
-                    : Colors.white),
+                color: isSelected ? const Color(0xFF0D47A1) : Colors.white),
             const SizedBox(height: 5),
             Text(
               role,
               style: TextStyle(
-                color: isSelected
-                    ? const Color(0xFF0D47A1)
-                    : Colors.white,
+                color: isSelected ? const Color(0xFF0D47A1) : Colors.white,
                 fontWeight: FontWeight.bold,
               ),
             ),
