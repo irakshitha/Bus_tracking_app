@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/route_model.dart';
 import '../models/bus_model.dart';
+import '../models/user_profile.dart';
 import 'seed_service.dart';
 
 class FirestoreService {
@@ -27,6 +28,21 @@ class FirestoreService {
 
   Future<void> saveUserRouteId(String uid, String routeId) async {
     await _db.collection('users').doc(uid).update({'routeId': routeId});
+  }
+
+  Future<UserProfile?> getUserProfile(String uid) async {
+    final doc = await _db.collection('users').doc(uid).get();
+    if (doc.exists && doc.data() != null) {
+      return UserProfile.fromMap(doc.data()!, uid);
+    }
+    return null;
+  }
+
+  Future<void> updateUserProfile(String uid, String name, String phone) async {
+    await _db.collection('users').doc(uid).update({
+      'name': name,
+      'phone': phone,
+    });
   }
 
   // ─── Routes ────────────────────────────────────────────────────────────────

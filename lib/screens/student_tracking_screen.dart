@@ -147,7 +147,7 @@ class _StudentTrackingScreenState extends State<StudentTrackingScreen>
     // Notify when 2 stops away
     if (remainingStops <= 2 && remainingStops >= 0 && !_hasNotifiedTwoStops) {
       _hasNotifiedTwoStops = true;
-      NotificationService.showLocalNotification(
+      NotificationService.show(
         title: 'Bus Approaching! 🚌',
         body: '${widget.routeModel.routeName} is $remainingStops stops away from the final destination.',
       );

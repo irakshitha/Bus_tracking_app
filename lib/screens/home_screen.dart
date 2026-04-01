@@ -49,6 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
               routeModel: widget.routeModel,
             ),
       ProfileScreen(
+        uid: widget.uid,
         role: widget.role,
         routeName: widget.routeModel.routeName,
       ),

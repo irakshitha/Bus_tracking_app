@@ -1,4 +1,5 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 /// Manages local push notifications.
 /// Call [initialize] once in main.dart before runApp().
@@ -75,5 +76,15 @@ class NotificationService {
       title: '🆘 SOS Sent',
       body: 'Your emergency alert has been sent. Help is on the way.',
     );
+  }
+
+  /// Subscribe to route specific notifications
+  static Future<void> subscribeToRoute(String routeId) async {
+    await FirebaseMessaging.instance.subscribeToTopic('route_$routeId');
+  }
+
+  /// Unsubscribe from route specific notifications
+  static Future<void> unsubscribeFromRoute(String routeId) async {
+    await FirebaseMessaging.instance.unsubscribeFromTopic('route_$routeId');
   }
 }

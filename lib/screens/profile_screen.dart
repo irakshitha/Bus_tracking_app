@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/bus_model.dart';
+import '../models/user_profile.dart';
 import '../services/auth_service.dart';
 import '../services/firestore_service.dart';
 import 'login_screen.dart';

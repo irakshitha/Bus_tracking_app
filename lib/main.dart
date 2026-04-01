@@ -6,7 +6,7 @@ import 'services/notification_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
-  await NotificationService.init();
+  await NotificationService.initialize();
   runApp(const MyApp());
 }
 
